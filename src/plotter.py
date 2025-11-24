@@ -1,79 +1,85 @@
 """
-Plotting module for visualizing comparison results.
+Plotting utilities for experiment summaries.
 """
 
+from __future__ import annotations
+
+from pathlib import Path
+from typing import List
+
 import matplotlib.pyplot as plt
-from typing import Tuple
 
 
-class Plotter:
-    """Generate bar charts for performance comparison."""
-    
-    @staticmethod
-    def plot_comparison(baseline_success: float, proposed_success: float,
-                       baseline_delay: float, proposed_delay: float,
-                       output_file: str = "comparison_results.png"):
-        """
-        Generate two bar charts comparing baseline and proposed schedulers.
-        
-        Args:
-            baseline_success: Baseline success rate (%)
-            proposed_success: Proposed success rate (%)
-            baseline_delay: Baseline average delay (seconds)
-            proposed_delay: Proposed average delay (seconds)
-            output_file: Output filename for the plot
-        """
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-        
-        # Success Rate Comparison
-        categories = ['Baseline', 'Proposed']
-        success_rates = [baseline_success, proposed_success]
-        colors = ['#3498db', '#2ecc71']
-        
-        bars1 = ax1.bar(categories, success_rates, color=colors, alpha=0.8, edgecolor='black')
-        ax1.set_ylabel('Success Rate (%)', fontsize=12, fontweight='bold')
-        ax1.set_title('Task Success Rate Comparison', fontsize=14, fontweight='bold')
-        ax1.set_ylim(0, 100)
-        ax1.grid(axis='y', alpha=0.3, linestyle='--')
-        
-        # Add value labels on bars
-        for bar in bars1:
-            height = bar.get_height()
-            ax1.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.1f}%',
-                    ha='center', va='bottom', fontsize=11, fontweight='bold')
-        
-        # Average Delay Comparison
-        delays = [baseline_delay, proposed_delay]
-        bars2 = ax2.bar(categories, delays, color=colors, alpha=0.8, edgecolor='black')
-        ax2.set_ylabel('Average Delay (seconds)', fontsize=12, fontweight='bold')
-        ax2.set_title('Average Delay Comparison', fontsize=14, fontweight='bold')
-        ax2.grid(axis='y', alpha=0.3, linestyle='--')
-        
-        # Add value labels on bars
-        for bar in bars2:
-            height = bar.get_height()
-            ax2.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.2f}s',
-                    ha='center', va='bottom', fontsize=11, fontweight='bold')
-        
-        plt.tight_layout()
-        plt.savefig(output_file, dpi=300, bbox_inches='tight')
-        print(f"\n✓ Comparison charts saved to: {output_file}")
-        plt.show()
-    
-    @staticmethod
-    def plot_metrics_only(baseline_success: float, proposed_success: float,
-                         baseline_delay: float, proposed_delay: float):
-        """
-        Plot comparison charts (wrapper for plot_comparison).
-        
-        Args:
-            baseline_success: Baseline success rate (%)
-            proposed_success: Proposed success rate (%)
-            baseline_delay: Baseline average delay (seconds)
-            proposed_delay: Proposed average delay (seconds)
-        """
-        Plotter.plot_comparison(baseline_success, proposed_success,
-                               baseline_delay, proposed_delay)
+def plot_with_error_bars(stats: List[dict], output_path: str) -> None:
+    if not stats:
+        return
+
+    schedulers = [entry["scheduler"].upper() for entry in stats]
+    indices = list(range(len(schedulers)))
+    colors = ["#34495e", "#2ecc71"]
+
+    success_means = [entry["success_mean"] for entry in stats]
+    success_stds = [entry["success_std"] for entry in stats]
+    delay_means = [entry["delay_mean"] for entry in stats]
+    delay_stds = [entry["delay_std"] for entry in stats]
+
+    fig, axes = plt.subplots(2, 1, figsize=(8, 8), sharex=True)
+
+    # Success subplot
+    bars_success = axes[0].bar(
+        indices,
+        success_means,
+        yerr=success_stds,
+        capsize=8,
+        color=colors,
+        alpha=0.85,
+        edgecolor="black",
+    )
+    axes[0].set_ylabel("Success Rate (%)")
+    axes[0].set_ylim(0, 105)
+    axes[0].set_title("Success Rate (mean ± std)", fontsize=12, fontweight="bold")
+    axes[0].grid(axis="y", linestyle="--", alpha=0.3)
+    for bar, mean, std in zip(bars_success, success_means, success_stds):
+        axes[0].text(
+            bar.get_x() + bar.get_width() / 2,
+            mean + std + 1,
+            f"{mean:.1f}%\n±{std:.1f}",
+            ha="center",
+            va="bottom",
+            fontsize=10,
+            fontweight="bold",
+        )
+
+    # Delay subplot
+    bars_delay = axes[1].bar(
+        indices,
+        delay_means,
+        yerr=delay_stds,
+        capsize=8,
+        color=colors,
+        alpha=0.85,
+        edgecolor="black",
+    )
+    axes[1].set_ylabel("Average Delay (seconds)")
+    axes[1].set_title("Average Delay (mean ± std)", fontsize=12, fontweight="bold")
+    axes[1].grid(axis="y", linestyle="--", alpha=0.3)
+    axes[1].set_xticks(indices)
+    axes[1].set_xticklabels(schedulers, fontsize=11, fontweight="bold")
+    for bar, mean, std in zip(bars_delay, delay_means, delay_stds):
+        axes[1].text(
+            bar.get_x() + bar.get_width() / 2,
+            mean + std + 0.02,
+            f"{mean:.3f}s\n±{std:.3f}",
+            ha="center",
+            va="bottom",
+            fontsize=10,
+            fontweight="bold",
+        )
+
+    fig.suptitle("Scheduler Comparison (DMITS vs Proposed)", fontsize=14, fontweight="bold")
+    fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
 

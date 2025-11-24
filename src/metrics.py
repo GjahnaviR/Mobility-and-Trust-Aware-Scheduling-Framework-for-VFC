@@ -1,60 +1,63 @@
 """
-Metrics calculation module for performance evaluation.
+Metrics helpers for experiment reporting.
 """
 
-from typing import Tuple
+from __future__ import annotations
+
+import csv
+from pathlib import Path
+from typing import Dict, List, Sequence, Tuple
+
+import numpy as np
+from scipy import stats
 
 
-class Metrics:
-    """Calculate performance metrics for scheduling algorithms."""
-    
-    @staticmethod
-    def calculate_success_rate(completed_tasks: int, total_tasks: int) -> float:
-        """
-        Calculate task success rate.
-        
-        Args:
-            completed_tasks: Number of successfully completed tasks
-            total_tasks: Total number of tasks
-            
-        Returns:
-            Success rate as percentage (0-100)
-        """
-        if total_tasks == 0:
-            return 0.0
-        return (completed_tasks / total_tasks) * 100.0
-    
-    @staticmethod
-    def calculate_average_delay(total_execution_time: float, completed_tasks: int) -> float:
-        """
-        Calculate average delay per completed task.
-        
-        Args:
-            total_execution_time: Total time taken to execute tasks
-            completed_tasks: Number of successfully completed tasks
-            
-        Returns:
-            Average delay per completed task in seconds
-        """
-        if completed_tasks == 0:
-            return 0.0
-        return total_execution_time / completed_tasks
-    
-    @staticmethod
-    def calculate_metrics(total_execution_time: float, completed_tasks: int, 
-                         total_tasks: int) -> Tuple[float, float]:
-        """
-        Calculate both success rate and average delay.
-        
-        Args:
-            total_execution_time: Total execution time
-            completed_tasks: Number of completed tasks
-            total_tasks: Total number of tasks
-            
-        Returns:
-            Tuple of (success_rate, average_delay)
-        """
-        success_rate = Metrics.calculate_success_rate(completed_tasks, total_tasks)
-        avg_delay = Metrics.calculate_average_delay(total_execution_time, completed_tasks)
-        return success_rate, avg_delay
+def success_rate(completed: int, total: int) -> float:
+    return (completed / total) * 100.0 if total else 0.0
+
+
+def average_delay(total_time: float, completed: int) -> float:
+    return total_time / completed if completed else float("nan")
+
+
+def summarize(result: Dict) -> Dict:
+    completed = result["completed_tasks"]
+    total = result["total_tasks"]
+    total_time = result["total_time"]
+    return {
+        "scheduler": result["scheduler"],
+        "success_rate": success_rate(completed, total),
+        "avg_delay": average_delay(total_time, completed),
+        "completed_tasks": completed,
+        "total_tasks": total,
+        "total_time": total_time,
+        "seed": result["seed"],
+    }
+
+
+def aggregate_stats(values: Sequence[float]) -> Tuple[float, float]:
+    arr = np.array(values, dtype=float)
+    if len(arr) <= 1:
+        return float(arr.mean()) if len(arr) else 0.0, 0.0
+    return float(arr.mean()), float(np.std(arr, ddof=1))
+
+
+def paired_t_test(x: Sequence[float], y: Sequence[float]) -> float:
+    if len(x) != len(y) or not x:
+        return float("nan")
+    stat = stats.ttest_rel(x, y, nan_policy="omit")
+    return float(stat.pvalue)
+
+
+def rows_to_csv(rows: List[Dict], path: str) -> None:
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        return
+    fieldnames = list(rows[0].keys())
+    with output.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
 

@@ -1,274 +1,176 @@
 """
-Main entry point for Vehicular Fog Network Scheduling Simulation.
-Compares baseline (mobility-only) vs proposed (mobility + trust + reliability) schedulers.
+Run multi-trial comparison between DMITS and the proposed scheduler.
 """
 
-import csv
-import os
-from src.fog_node import FogNode
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+from src.dataset_loader import load_nodes
+from src.metrics import aggregate_stats, paired_t_test, rows_to_csv, summarize
+from src.plotter import plot_with_error_bars
+from src.scheduler_dmits import DMITSScheduler
+from src.scheduler_proposed import ProposedConfig, ProposedScheduler
+from src.simulator import FailureSettings, Simulator
 from src.task import Task
-from src.simulator import Simulator
-from src.metrics import Metrics
-from src.plotter import Plotter
-from src.mobility_processor import MobilityProcessor
 
 
-def load_fog_nodes_from_csv(csv_file: str = "vehicular_data.csv", 
-                           use_mobility_processor: bool = False) -> list:
-    """
-    Load fog nodes from CSV dataset.
-    
-    Supports two formats:
-    1. Simple format: node_id,speed,success,failure
-    2. Mobility format: vehicle_id,timestamp,distance,duration,speed (Porto-style)
-    
-    Args:
-        csv_file: Path to CSV file
-        use_mobility_processor: If True, use MobilityProcessor for trajectory data
-        
-    Returns:
-        List of FogNode objects
-    """
-    # Check if file exists
-    if not os.path.exists(csv_file):
-        print(f"Error: {csv_file} not found!")
-        raise FileNotFoundError(f"{csv_file} not found")
-    
-    # Try to detect format by reading first line
-    try:
-        with open(csv_file, 'r', encoding='utf-8') as f:
-            first_line = f.readline().strip()
-            headers = first_line.split(',')
-    except Exception as e:
-        print(f"Error reading CSV: {e}")
-        raise
-    
-    # Check if it's a mobility dataset (has trajectory columns)
-    mobility_columns = ['vehicle_id', 'distance', 'duration', 'timestamp', 'latitude', 'longitude']
-    is_mobility_format = any(col in headers for col in mobility_columns) or use_mobility_processor
-    
-    if is_mobility_format:
-        # Use mobility processor for trajectory data
-        print(f"Detected mobility/trajectory dataset format")
-        try:
-            nodes = MobilityProcessor.process_mobility_dataset(
-                csv_file,
-                vehicle_id_col='vehicle_id' if 'vehicle_id' in headers else headers[0],
-                speed_col='speed' if 'speed' in headers else None,
-                distance_col='distance' if 'distance' in headers else None,
-                duration_col='duration' if 'duration' in headers else None
-            )
-            return nodes
-        except Exception as e:
-            print(f"Error processing mobility dataset: {e}")
-            print("Falling back to simple format...")
-            # Fall through to simple format
-    
-    # Simple format: node_id,speed,success,failure
-    nodes = []
-    try:
-        with open(csv_file, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                node_id = int(row['node_id'])
-                speed = float(row['speed'])
-                success = int(row['success'])
-                failure = int(row['failure'])
-                
-                node = FogNode(
-                    node_id=node_id,
-                    speed=speed,
-                    success=success,
-                    failure=failure
-                )
-                nodes.append(node)
-        print(f"✓ Loaded {len(nodes)} nodes from {csv_file} (simple format)")
-    except Exception as e:
-        print(f"Error loading CSV: {e}")
-        raise
-    
-    return nodes
-
-
-def create_tasks(num_tasks: int = 8) -> list:
-    """
-    Create tasks with dependencies forming a DAG.
-    
-    Args:
-        num_tasks: Number of tasks to create
-        
-    Returns:
-        List of Task objects
-    """
-    tasks = []
-    
-    # Example DAG structure:
-    # Task 1 -> Task 2, Task 3
-    # Task 2 -> Task 4
-    # Task 3 -> Task 4, Task 5
-    # Task 4 -> Task 6
-    # Task 5 -> Task 7
-    # Task 6, Task 7 -> Task 8
-    
-    # Define task dependencies
-    dependencies_map = {
-        1: [],  # No dependencies
-        2: [1],
-        3: [1],
-        4: [2, 3],
-        5: [3],
-        6: [4],
-        7: [5],
-        8: [6, 7]
-    }
-    
-    # Execution times (in seconds) - deterministic
-    execution_times = [2.0, 3.0, 2.5, 4.0, 3.5, 2.0, 2.5, 3.0]
-    
-    for i in range(1, min(num_tasks + 1, 9)):
-        task_id = i
-        deps = dependencies_map.get(i, [])
-        exec_time = execution_times[i - 1] if i <= len(execution_times) else 3.0
-        
-        task = Task(
-            task_id=task_id,
-            execution_time=exec_time,
-            dependencies=deps
-        )
-        tasks.append(task)
-    
-    # If more tasks needed, create additional independent tasks
-    if num_tasks > 8:
-        for i in range(9, num_tasks + 1):
-            task = Task(
-                task_id=i,
-                execution_time=3.0,  # Fixed execution time for determinism
-                dependencies=[]
-            )
-            tasks.append(task)
-    
+def build_tasks(num_tasks: int, base_time: float = 2.5) -> List[Task]:
+    tasks: List[Task] = []
+    for task_id in range(1, num_tasks + 1):
+        deps: List[int] = []
+        if task_id > 3:
+            deps.append(task_id - 3)
+        if task_id > 5 and task_id % 5 == 0:
+            deps.append(task_id - 5)
+        execution_time = base_time + (task_id % 7) * 0.2
+        tasks.append(Task(task_id=task_id, execution_time=execution_time, deps=deps, max_retries=3))
     return tasks
 
 
-def main():
-    """Main simulation function."""
-    print("=" * 70)
-    print("  Mobility and Trust-Aware Scheduling Framework")
-    print("  for Vehicular Fog Networks - Dataset-Based Simulation")
-    print("=" * 70)
-    print()
-    
-    # Step 1: Load fog nodes from dataset
-    print("Step 1: Loading fog nodes from dataset...")
-    
-    # Try to load from different dataset formats
-    dataset_files = [
-        "porto_mobility_sample.csv",  # Porto-style mobility dataset
-        "vehicular_data.csv"           # Simple format
-    ]
-    
-    nodes = None
-    for dataset_file in dataset_files:
-        if os.path.exists(dataset_file):
-            try:
-                nodes = load_fog_nodes_from_csv(dataset_file)
-                print(f"✓ Loaded {len(nodes)} fog nodes from dataset")
-                for node in nodes:
-                    print(f"  {node}")
-                print()
-                break
-            except Exception as e:
-                print(f"Warning: Could not load {dataset_file}: {e}")
-                continue
-    
-    if nodes is None or len(nodes) == 0:
-        print("No dataset found. Creating sample dataset...")
-        # Create sample Porto-format dataset
-        sample_file = MobilityProcessor.create_sample_porto_format_dataset()
-        nodes = load_fog_nodes_from_csv(sample_file)
-        print(f"✓ Loaded {len(nodes)} fog nodes from sample dataset")
-        for node in nodes:
-            print(f"  {node}")
-        print()
-    
-    # Step 2: Create tasks
-    print("Step 2: Creating tasks with dependencies...")
-    tasks = create_tasks(num_tasks=50)  # Increased to 50 tasks to show learning effect
-    print(f"✓ Created {len(tasks)} tasks")
+def clone_tasks(tasks: List[Task]) -> List[Task]:
+    cloned: List[Task] = []
     for task in tasks:
-        print(f"  {task}")
-    print()
-    
-    # Step 3: Create simulator
-    print("Step 3: Initializing simulator...")
-    simulator = Simulator(nodes, tasks, seed=42)  # Deterministic seed
-    print("✓ Simulator ready (deterministic mode)")
-    print()
-    
-    # Step 4: Run baseline scheduling
-    print("Step 4: Running baseline scheduler (mobility-only)...")
-    # Reset nodes to initial state
-    for node in nodes:
-        node.reset_to_initial()
-    baseline_time, baseline_completed, baseline_total = simulator.simulate_baseline()
-    baseline_success_rate, baseline_avg_delay = Metrics.calculate_metrics(
-        baseline_time, baseline_completed, baseline_total
+        cloned.append(
+            Task(
+                task_id=task.task_id,
+                execution_time=task.execution_time,
+                deps=list(task.dependencies),
+                max_retries=task.max_retries,
+            )
+        )
+    return cloned
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="DMITS vs Proposed scheduler comparison")
+    parser.add_argument("--dataset", type=str, default="porto_mobility_sample.csv")
+    parser.add_argument("--trials", type=int, default=30)
+    parser.add_argument("--tasks", type=int, default=50)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--slope", type=float, default=4.0)
+    parser.add_argument("--midpoint", type=float, default=0.3)
+    parser.add_argument("--trust-weight", type=float, default=0.5)
+    parser.add_argument("--mobility-weight", type=float, default=0.5)
+    parser.add_argument("--results-dir", type=str, default="results")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    nodes = load_nodes(args.dataset)
+    tasks_template = build_tasks(args.tasks)
+    failure_settings = FailureSettings(slope=args.slope, midpoint=args.midpoint)
+    simulator = Simulator(failure_settings=failure_settings)
+    results_dir = Path(args.results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    trial_rows: List[Dict] = []
+    dmits_success: List[float] = []
+    proposed_success: List[float] = []
+    dmits_delay: List[float] = []
+    proposed_delay: List[float] = []
+
+    print(f"Loaded {len(nodes)} nodes from {args.dataset}")
+    print(f"Running {args.trials} trials with {args.tasks} tasks each...\n")
+
+    for trial in range(args.trials):
+        trial_seed = args.seed + trial * 17
+        nodes_dmits = [node.clone() for node in nodes]
+        nodes_prop = [node.clone() for node in nodes]
+        tasks_dmits = clone_tasks(tasks_template)
+        tasks_prop = clone_tasks(tasks_template)
+
+        dmits_sched = DMITSScheduler(nodes_dmits)
+        proposed_sched = ProposedScheduler(
+            nodes_prop,
+            ProposedConfig(trust_weight=args.trust_weight, mobility_weight=args.mobility_weight),
+        )
+
+        dmits_result = simulator.run("DMITS", dmits_sched, nodes_dmits, tasks_dmits, trial_seed)
+        proposed_result = simulator.run("PROPOSED", proposed_sched, nodes_prop, tasks_prop, trial_seed + 999)
+
+        dmits_summary = summarize(dmits_result) | {"trial": trial}
+        proposed_summary = summarize(proposed_result) | {"trial": trial}
+        trial_rows.extend([dmits_summary, proposed_summary])
+
+        dmits_success.append(dmits_summary["success_rate"])
+        proposed_success.append(proposed_summary["success_rate"])
+        dmits_delay.append(dmits_summary["avg_delay"])
+        proposed_delay.append(proposed_summary["avg_delay"])
+
+        print(
+            f"Trial {trial:02d} | DMITS success {dmits_summary['success_rate']:.2f}% "
+            f"delay {dmits_summary['avg_delay']:.3f}s | "
+            f"PROPOSED success {proposed_summary['success_rate']:.2f}% "
+            f"delay {proposed_summary['avg_delay']:.3f}s"
+        )
+
+    rows_to_csv(trial_rows, results_dir / "trial_results.csv")
+
+    dmits_mean, dmits_std = aggregate_stats(dmits_success)
+    proposed_mean, proposed_std = aggregate_stats(proposed_success)
+    dmits_delay_mean, dmits_delay_std = aggregate_stats(dmits_delay)
+    proposed_delay_mean, proposed_delay_std = aggregate_stats(proposed_delay)
+    p_value = paired_t_test(proposed_success, dmits_success)
+
+    stats_payload = [
+        {
+            "scheduler": "DMITS",
+            "success_mean": dmits_mean,
+            "success_std": dmits_std,
+            "delay_mean": dmits_delay_mean,
+            "delay_std": dmits_delay_std,
+        },
+        {
+            "scheduler": "PROPOSED",
+            "success_mean": proposed_mean,
+            "success_std": proposed_std,
+            "delay_mean": proposed_delay_mean,
+            "delay_std": proposed_delay_std,
+        },
+    ]
+    plot_with_error_bars(stats_payload, results_dir / "comparison_results.png")
+
+    print("\nFinal Comparison (mean +/- std)")
+    print(
+        f"    DMITS | Success: {dmits_mean:.2f}% +/- {dmits_std:.2f} "
+        f"| Avg Delay: {dmits_delay_mean:.3f}s +/- {dmits_delay_std:.3f}"
     )
-    print(f"✓ Baseline simulation completed")
-    print(f"  Completed: {baseline_completed}/{baseline_total} tasks")
-    print(f"  Total time: {baseline_time:.2f}s")
-    print()
-    
-    # Step 5: Run proposed scheduling
-    print("Step 5: Running proposed scheduler (mobility + trust + reliability)...")
-    # Reset nodes to initial state for fair comparison
-    for node in nodes:
-        node.reset_to_initial()
-    proposed_time, proposed_completed, proposed_total = simulator.simulate_proposed()
-    proposed_success_rate, proposed_avg_delay = Metrics.calculate_metrics(
-        proposed_time, proposed_completed, proposed_total
+    print(
+        f" PROPOSED | Success: {proposed_mean:.2f}% +/- {proposed_std:.2f} "
+        f"| Avg Delay: {proposed_delay_mean:.3f}s +/- {proposed_delay_std:.3f}"
     )
-    print(f"✓ Proposed simulation completed")
-    print(f"  Completed: {proposed_completed}/{proposed_total} tasks")
-    print(f"  Total time: {proposed_time:.2f}s")
-    print()
-    
-    # Step 6: Print comparison results
-    print("=" * 70)
-    print("  COMPARISON RESULTS")
-    print("=" * 70)
-    print(f"Baseline Success Rate:  {baseline_success_rate:.1f}%")
-    print(f"Proposed Success Rate:  {proposed_success_rate:.1f}%")
-    print()
-    print(f"Baseline Average Delay: {baseline_avg_delay:.2f}s")
-    print(f"Proposed Average Delay: {proposed_avg_delay:.2f}s")
-    print()
-    
-    # Calculate improvements
-    success_improvement = proposed_success_rate - baseline_success_rate
-    delay_improvement = baseline_avg_delay - proposed_avg_delay
-    delay_improvement_pct = (delay_improvement / baseline_avg_delay * 100) if baseline_avg_delay > 0 else 0
-    
-    print("Improvements:")
-    print(f"  Success Rate: +{success_improvement:.1f}% ({'↑' if success_improvement > 0 else '↓'})")
-    print(f"  Average Delay: -{delay_improvement:.2f}s ({delay_improvement_pct:.1f}% {'↓' if delay_improvement > 0 else '↑'})")
-    print()
-    
-    # Step 7: Generate plots
-    print("Step 7: Generating comparison charts...")
-    Plotter.plot_comparison(
-        baseline_success_rate,
-        proposed_success_rate,
-        baseline_avg_delay,
-        proposed_avg_delay
+    print(f"\nPaired t-test p-value (success rate): {p_value:.4f}")
+
+    avg_completed_dmits = int(round((dmits_mean / 100.0) * args.tasks))
+    avg_completed_proposed = int(round((proposed_mean / 100.0) * args.tasks))
+    print("\nRequired Summary Format")
+    print(
+        f"    DMITS | Success: {dmits_mean:.1f}% | Avg Delay: {dmits_delay_mean:.3f}s "
+        f"| Completed: {avg_completed_dmits}/{args.tasks}"
     )
-    print()
-    
-    print("=" * 70)
-    print("  Simulation completed successfully!")
-    print("=" * 70)
+    print(
+        f" PROPOSED | Success: {proposed_mean:.1f}% | Avg Delay: {proposed_delay_mean:.3f}s "
+        f"| Completed: {avg_completed_proposed}/{args.tasks}"
+    )
+
+    summary_txt = results_dir / "summary.txt"
+    with summary_txt.open("w", encoding="utf-8") as handle:
+        handle.write("Multi-trial comparison between DMITS and Proposed scheduler\n")
+        handle.write(f"Dataset: {args.dataset}\nTrials: {args.trials}\nTasks per trial: {args.tasks}\n")
+        handle.write(f"Failure slope: {args.slope}, midpoint: {args.midpoint}\n\n")
+        for entry in stats_payload:
+            handle.write(
+                f"{entry['scheduler']}: success {entry['success_mean']:.2f}% ± {entry['success_std']:.2f}, "
+                f"avg delay {entry['delay_mean']:.3f}s ± {entry['delay_std']:.3f}\n"
+            )
+        handle.write(f"\nPaired t-test p-value (success): {p_value:.4f}\n")
 
 
 if __name__ == "__main__":
     main()
+
 
