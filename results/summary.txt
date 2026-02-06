@@ -1,10 +1,10 @@
 Multi-trial comparison between DMITS and Proposed scheduler
 Dataset: porto_mobility_sample.csv
-Trials: 10
+Trials: 30
 Tasks per trial: 50
 Failure slope: 4.0, midpoint: 0.3
 
-DMITS: success 92.40% ± 24.03, avg delay 3.411s ± 0.207
-PROPOSED: success 100.00% ± 0.00, avg delay 3.315s ± 0.124
+DMITS: success 97.47% ± 13.88, avg delay 3.420s ± 0.173
+PROPOSED: success 99.67% ± 1.83, avg delay 3.303s ± 0.126
 
-Paired t-test p-value (success): 0.3434
+Paired t-test p-value (success): 0.3984
