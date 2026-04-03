@@ -16,9 +16,16 @@ class TaskStatus(Enum):
 
 
 class Task:
-    """Represents a computational task with dependencies."""
+    """Represents a computational task with dependencies and priority."""
 
-    def __init__(self, task_id: int, execution_time: float, deps: Optional[List[int]] = None, max_retries: int = 2):
+    def __init__(
+        self,
+        task_id: int,
+        execution_time: float,
+        deps: Optional[List[int]] = None,
+        max_retries: int = 2,
+        priority: int = 0,
+    ):
         """
         Initialize a task.
 
@@ -27,10 +34,12 @@ class Task:
             execution_time: Time required to execute the task (in seconds)
             deps: List of task_ids that must complete before this task can run
             max_retries: Maximum number of times a failed task can be requeued
+            priority: Larger values indicate higher scheduling priority
         """
         self.task_id = task_id
         self.execution_time = execution_time
         self.dependencies = deps if deps is not None else []
+        self.priority = priority
         self.status = TaskStatus.PENDING
         self.assigned_node = None
         self.start_time: Optional[float] = None
@@ -82,7 +91,9 @@ class Task:
     
     def __repr__(self):
         deps_str = f", deps={self.dependencies}" if self.dependencies else ""
-        return (f"Task(id={self.task_id}, time={self.execution_time:.2f}s, "
-                f"status={self.status.value}{deps_str})")
+        return (
+            f"Task(id={self.task_id}, time={self.execution_time:.2f}s, "
+            f"priority={self.priority}, status={self.status.value}{deps_str})"
+        )
 
 

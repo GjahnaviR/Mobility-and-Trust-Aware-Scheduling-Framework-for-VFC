@@ -16,7 +16,10 @@ def plot_with_error_bars(stats: List[dict], output_path: str) -> None:
 
     schedulers = [entry["scheduler"].upper() for entry in stats]
     indices = list(range(len(schedulers)))
-    colors = ["#34495e", "#2ecc71"]
+
+    # Use a palette that can accommodate multiple schedulers.
+    base_colors = ["#34495e", "#2ecc71", "#e67e22", "#9b59b6", "#e74c3c"]
+    colors = [base_colors[i % len(base_colors)] for i in indices]
 
     success_means = [entry["success_mean"] for entry in stats]
     success_stds = [entry["success_std"] for entry in stats]

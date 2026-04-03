@@ -13,10 +13,14 @@ from .task import Task
 
 @dataclass
 class ProposedConfig:
-    trust_weight: float = 0.5
-    mobility_weight: float = 0.5
+    trust_weight: float = 0.7
+    mobility_weight: float = 0.3
     trust_inc: float = 0.05
     trust_dec: float = 0.10
+    # Extra multiplicative bonus applied when a node is an RSU / fog server.
+    # This strengthens the preference of the Proposed scheduler for RSUs
+    # without changing the DMITS behaviour.
+    rsu_bonus: float = 0.10
 
 
 class ProposedScheduler:
@@ -29,8 +33,18 @@ class ProposedScheduler:
 
     def _score(self, node: FogNode) -> float:
         node.compute_mobility_score()
-        node.compute_reliability(trust_weight=self.config.trust_weight, mobility_weight=self.config.mobility_weight)
-        return node.reliability_score
+        base = node.compute_reliability(
+            trust_weight=self.config.trust_weight,
+            mobility_weight=self.config.mobility_weight,
+        )
+
+        # If RSUs / fog servers are present (is_rsu=True), give them a small
+        # multiplicative bonus so that the Proposed scheduler preferentially
+        # uses these highly reliable infrastructure nodes.
+        if getattr(node, "is_rsu", False):
+            base *= (1.0 + self.config.rsu_bonus)
+
+        return base
 
     def select_node(self, task: Task) -> FogNode:
         """Recompute ranking before each assignment (dynamic rearrangement)."""

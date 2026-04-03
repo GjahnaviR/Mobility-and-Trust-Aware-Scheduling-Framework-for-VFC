@@ -66,6 +66,10 @@ class DAGManager:
         for task_id, task in self.tasks.items():
             if task.status == TaskStatus.PENDING and task.is_ready(completed_tasks):
                 ready.append(task_id)
+
+        # Sort ready tasks by descending priority (higher first), then by task_id
+        # to ensure deterministic behaviour when priorities are equal.
+        ready.sort(key=lambda tid: (-self.tasks[tid].priority, tid))
         return ready
     
     def get_task(self, task_id: int) -> Task:

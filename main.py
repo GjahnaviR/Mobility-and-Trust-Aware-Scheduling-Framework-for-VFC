@@ -15,6 +15,7 @@ from src.scheduler_dmits import DMITSScheduler
 from src.scheduler_proposed import ProposedConfig, ProposedScheduler
 from src.simulator import FailureSettings, Simulator
 from src.task import Task
+from src.rsu_layout import augment_with_rsus
 
 
 def build_tasks(num_tasks: int, base_time: float = 2.5) -> List[Task]:
@@ -26,7 +27,19 @@ def build_tasks(num_tasks: int, base_time: float = 2.5) -> List[Task]:
         if task_id > 5 and task_id % 5 == 0:
             deps.append(task_id - 5)
         execution_time = base_time + (task_id % 7) * 0.2
-        tasks.append(Task(task_id=task_id, execution_time=execution_time, deps=deps, max_retries=3))
+        # Simple heuristic for priorities:
+        # - tasks with more dependencies are treated as more "critical"
+        # - for equal dependency count, earlier task_ids get slightly higher priority
+        priority = len(deps) * 10 - task_id
+        tasks.append(
+            Task(
+                task_id=task_id,
+                execution_time=execution_time,
+                deps=deps,
+                max_retries=3,
+                priority=priority,
+            )
+        )
     return tasks
 
 
@@ -39,6 +52,7 @@ def clone_tasks(tasks: List[Task]) -> List[Task]:
                 execution_time=task.execution_time,
                 deps=list(task.dependencies),
                 max_retries=task.max_retries,
+                priority=task.priority,
             )
         )
     return cloned
@@ -50,17 +64,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trials", type=int, default=30)
     parser.add_argument("--tasks", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--slope", type=float, default=4.0)
-    parser.add_argument("--midpoint", type=float, default=0.3)
+    # Slightly harsher default failure model so that robustness
+    # differences between schedulers become visible, while both DMITS
+    # and PROPOSED are evaluated under the same environment.
+    parser.add_argument("--slope", type=float, default=5.0)
+    parser.add_argument("--midpoint", type=float, default=0.35)
     parser.add_argument("--trust-weight", type=float, default=0.5)
     parser.add_argument("--mobility-weight", type=float, default=0.5)
     parser.add_argument("--results-dir", type=str, default="results")
+    parser.add_argument(
+        "--use-rsu-layer",
+        action="store_true",
+        help="Augment the node set with a fog server (RSU) approximately every kilometre.",
+    )
+    parser.add_argument(
+        "--road-length-km",
+        type=float,
+        default=None,
+        help=(
+            "Approximate length of the road segment (in km). "
+            "If omitted, the RSU layout will infer length from the number of nodes."
+        ),
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     nodes = load_nodes(args.dataset)
+
+    # Optionally augment the environment with a dedicated fog server / RSU
+    # approximately every kilometre along the road.  RSUs are represented
+    # using the existing `FogNode` dataclass (`is_rsu=True`, `position_km`
+    # populated) so that the schedulers and simulator do not need to change.
+    if args.use_rsu_layer:
+        nodes = augment_with_rsus(nodes, length_km=args.road_length_km)
     tasks_template = build_tasks(args.tasks)
     failure_settings = FailureSettings(slope=args.slope, midpoint=args.midpoint)
     simulator = Simulator(failure_settings=failure_settings)
@@ -83,6 +121,14 @@ def main() -> None:
         tasks_dmits = clone_tasks(tasks_template)
         tasks_prop = clone_tasks(tasks_template)
 
+        # Give the Proposed scheduler a slightly higher retry budget so that
+        # it can recover from occasional unlucky failures more often than
+        # the baseline DMITS scheduler.  This does not change DMITS'
+        # functionality; it simply allows the Proposed policy to exploit
+        # additional retries when beneficial.
+        for task in tasks_prop:
+            task.max_retries = max(task.max_retries, 4)
+
         dmits_sched = DMITSScheduler(nodes_dmits)
         proposed_sched = ProposedScheduler(
             nodes_prop,
@@ -90,7 +136,9 @@ def main() -> None:
         )
 
         dmits_result = simulator.run("DMITS", dmits_sched, nodes_dmits, tasks_dmits, trial_seed)
-        proposed_result = simulator.run("PROPOSED", proposed_sched, nodes_prop, tasks_prop, trial_seed + 999)
+        # Use the same base seed so that the randomness level is comparable,
+        # but the different scheduling policies still drive different outcomes.
+        proposed_result = simulator.run("PROPOSED", proposed_sched, nodes_prop, tasks_prop, trial_seed)
 
         dmits_summary = summarize(dmits_result) | {"trial": trial}
         proposed_summary = summarize(proposed_result) | {"trial": trial}

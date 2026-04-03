@@ -24,10 +24,33 @@ def summarize(result: Dict) -> Dict:
     completed = result["completed_tasks"]
     total = result["total_tasks"]
     total_time = result["total_time"]
+
+    # QoS-style metrics derived from simulation output
+    makespan = total_time  # overall completion time for all finished tasks
+    throughput = completed / total_time if total_time > 0 else 0.0  # tasks per second
+
+    # Approximate per-task latency as the same as average delay in this
+    # simple single-server time model; in more complex models, latency
+    # would usually be measured per task using start/finish timestamps.
+    avg_delay_val = average_delay(total_time, completed)
+    latency = avg_delay_val
+
+    # Simple energy model: assume a fixed dynamic energy cost per task
+    # execution attempt plus a small idle cost proportional to makespan.
+    # This is synthetic but allows relative comparison between schedulers.
+    per_task_energy = 1.0
+    idle_power = 0.05
+    num_attempts = completed + len(result.get("failed_tasks", []))
+    energy = per_task_energy * num_attempts + idle_power * makespan
+
     return {
         "scheduler": result["scheduler"],
         "success_rate": success_rate(completed, total),
-        "avg_delay": average_delay(total_time, completed),
+        "avg_delay": avg_delay_val,
+        "makespan": makespan,
+        "throughput": throughput,
+        "latency": latency,
+        "energy": energy,
         "completed_tasks": completed,
         "total_tasks": total,
         "total_time": total_time,

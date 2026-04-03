@@ -13,7 +13,16 @@ from .trust_manager import update_trust as _update_trust
 
 @dataclass
 class FogNode:
-    """Represents a vehicle participating in the fog network."""
+    """Represents an execution node in the fog network.
+
+    This can be:
+    - a mobile vehicle participating in cooperative task execution, or
+    - a stationary fog server / RSU positioned along the road.
+
+    The optional `position_km` and `is_rsu` attributes allow us to model
+    a roadway with a fog server every kilometre that can assist vehicles
+    with task execution.
+    """
 
     node_id: int
     speed: float
@@ -26,6 +35,9 @@ class FogNode:
     current_state: str = field(default="MEDIUM")
     past_success: int = field(default=0)
     past_failure: int = field(default=0)
+    # Optional spatial / role attributes
+    position_km: float | None = None
+    is_rsu: bool = False
 
     def __post_init__(self) -> None:
         self.trust_score = min(max(self.trust_score, 0.0), 1.0)
@@ -86,6 +98,8 @@ class FogNode:
             current_state=self.current_state,
             past_success=self.past_success,
             past_failure=self.past_failure,
+            position_km=self.position_km,
+            is_rsu=self.is_rsu,
         )
 
     def to_dict(self) -> dict:
@@ -98,6 +112,8 @@ class FogNode:
             "centrality": self.centrality,
             "successes": self.successes,
             "failures": self.failures,
+            "position_km": self.position_km,
+            "is_rsu": self.is_rsu,
         }
 
     def __repr__(self) -> str:
